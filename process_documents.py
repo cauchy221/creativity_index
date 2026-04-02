@@ -23,12 +23,18 @@ os.environ['TOKENIZERS_PARALLELISM'] = "false"
 class RetrievedDoc:
     doc_text: str
     hit_ratio: float
+    title: str = ''
+    author: str = ''
+    chunk_id: int = -1
 
 
 def format_retrieved_doc(retrieved_doc: RetrievedDoc):
     return {
         'doc_text': retrieved_doc.doc_text,
         'hit_ratio': retrieved_doc.hit_ratio,
+        'title': retrieved_doc.title,
+        'author': retrieved_doc.author,
+        'chunk_id': retrieved_doc.chunk_id,
     }
 
 
@@ -40,12 +46,16 @@ def detokenize(x):
     return md.detokenize(x)
 
 
-def document_attribution(target_tokens: List[str], num_hits: int, span_length: int, ref_text: str):
+def document_attribution(target_tokens: List[str], num_hits: int, span_length: int,
+                         ref_text: str, title: str = '', author: str = '', chunk_id: int = -1):
     """
     :param target_tokens: a list of tokens (str) from the target document
     :param ref_text: text (str) from the reference document
     :param num_hits: minimal number of matched tokens for the matched span
     :param span_length: length of the fuzzy span
+    :param title: reference book title (for attribution)
+    :param author: reference book author (for attribution)
+    :param chunk_id: reference chunk id (for attribution)
     :return: a RetrievedDoc object
     """
     ref_sentences = sent_tokenize(ref_text)
@@ -79,7 +89,8 @@ def document_attribution(target_tokens: List[str], num_hits: int, span_length: i
     if any(ref_sent_flags):
         ref_select_text = ' '.join([x for i, x in enumerate(ref_sentences) if ref_sent_flags[i]])
         hit_ratio = sum(ref_token_flags) / len(target_tokens)
-        retrieved_doc = RetrievedDoc(doc_text=ref_select_text, hit_ratio=hit_ratio)
+        retrieved_doc = RetrievedDoc(doc_text=ref_select_text, hit_ratio=hit_ratio,
+                                     title=title, author=author, chunk_id=chunk_id)
 
     return retrieved_doc
 
@@ -106,13 +117,16 @@ def run_DJ_attribute(retrieved_data_path, data_output_file, num_hits, span_lengt
                 f.flush()
             continue
 
-        r_docs = [(q_idx, d['_source']['text']) for q_idx, query in enumerate(t_doc['retrieval_details']) for d in query['top_docs']]
-        r_docs = list(toolz.unique(r_docs, key=lambda r_doc: r_doc[1]))
-        ref_q_idx, ref_texts = [list(x) for x in zip(*r_docs)]
+        r_docs = [(q_idx, d['_source']['text'],
+                   d['_source'].get('title', ''), d['_source'].get('author', ''), d['_source'].get('chunk_id', -1))
+                  for q_idx, query in enumerate(t_doc['retrieval_details']) for d in query['top_docs']]
+        r_docs = list(toolz.unique(r_docs, key=lambda r_doc: r_doc[1]))  # deduplicate by text
+        ref_q_idx, ref_texts, ref_titles, ref_authors, ref_chunk_ids = [list(x) for x in zip(*r_docs)]
 
-        document_attribution_func = partial(document_attribution, target_doc_tokens, num_hits, span_length)
+        starmap_args = [(target_doc_tokens, num_hits, span_length, text, title, author, cid)
+                        for text, title, author, cid in zip(ref_texts, ref_titles, ref_authors, ref_chunk_ids)]
         with mp.Pool(processes=num_cpus) as pool:
-            doc_return = pool.map(document_attribution_func, ref_texts)
+            doc_return = pool.starmap(document_attribution, starmap_args)
 
         # update the retrieved documents
         retrieved_docs = {k: [] for k in set(ref_q_idx)}

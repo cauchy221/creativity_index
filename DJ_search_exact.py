@@ -7,13 +7,10 @@ import argparse
 import numpy as np
 from tqdm import tqdm
 from typing import List, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from unidecode import unidecode
 from sacremoses import MosesDetokenizer
 from transformers import AutoTokenizer
-
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'infini-gram', 'pkg'))
-from infini_gram.engine import InfiniGramEngine
 
 md = MosesDetokenizer(lang='en')
 HF_TOKEN = os.environ.get("HF_TOKEN", "YOUR_HF_TOKEN")
@@ -36,6 +33,7 @@ class Span:
     end_index: int
     span_text: str
     occurrence: int
+    sources: list = field(default_factory=list)  # [{title, author, source_file}, ...]
 
 
 class Hypothesis:
@@ -87,7 +85,8 @@ class Hypothesis:
         matched_spans = [{'start_index': s.start_index,
                           'end_index': s.end_index,
                           'span_text': s.span_text,
-                          'occurrence': s.occurrence} for s in self.spans]
+                          'occurrence': s.occurrence,
+                          'sources': s.sources} for s in self.spans]
         return {
             'matched_spans': matched_spans,
             'coverage': self.get_score(),
@@ -108,10 +107,28 @@ def find_exact_match(detokenize: Callable, doc: Document, min_ngram: int):
         occurrence = search_result.get('count', 0)
 
         if occurrence:
+            # Get attribution: which reference book(s) contain this span
+            sources = []
+            try:
+                doc_result = engine.search_docs(input_ids=input_ids, maxnum=3, max_disp_len=1)
+                for ref_doc in doc_result.get('documents', []):
+                    meta = json.loads(ref_doc.get('metadata', '{}')).get('metadata', {})
+                    sources.append({
+                        'title': meta.get('title', ''),
+                        'author': meta.get('author', ''),
+                        'source_file': meta.get('source_file', ''),
+                    })
+                # Deduplicate by title
+                seen = set()
+                sources = [s for s in sources if s['title'] not in seen and not seen.add(s['title'])]
+            except Exception:
+                pass
+
             matched_span = Span(start_index=first_pointer,
                                 end_index=second_pointer,
                                 span_text=span_text,
-                                occurrence=occurrence)
+                                occurrence=occurrence,
+                                sources=sources)
             if not hypothesis.spans:
                 hypothesis.add_span(matched_span)
             else:
@@ -178,6 +195,9 @@ def dj_search(data_path, output_file, min_ngram, subset=100, lm_tokenizer=False)
 def main():
     global engine
 
+    sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'infini-gram', 'pkg'))
+    from infini_gram.engine import InfiniGramEngine
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--task', type=str, default='GPT3_book',
                         help="which type of corpus to analyze")
@@ -191,8 +211,8 @@ def main():
                         help="size of example subset to run search on")
     parser.add_argument('--lm_tokenizer', action='store_true',
                         help='whether to LM tokenizer instead of whitespace tokenizer')
-    parser.add_argument('--index_dir', type=str, required=True,
-                        help='path to infini-gram index directory')
+    parser.add_argument('--index_dir', type=str, nargs='+', required=True,
+                        help='path(s) to infini-gram index directory(ies). Multiple dirs for incremental indexing.')
 
     args = parser.parse_args()
 
@@ -201,7 +221,7 @@ def main():
         index_dir=args.index_dir,
         eos_token_id=tokenizer.eos_token_id,
     )
-    print(f'Loaded infini-gram index from {args.index_dir}')
+    print(f'Loaded infini-gram index from {args.index_dir} ({len(args.index_dir)} dir(s))')
 
     os.makedirs(args.output_dir, exist_ok=True)
     args.output_file = os.path.join(args.output_dir, args.task + '.json')

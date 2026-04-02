@@ -35,6 +35,9 @@ class SoftSpan:
     span_text: str
     ref_span_text: str
     score: float
+    ref_title: str = ''
+    ref_author: str = ''
+    ref_chunk_id: int = -1
 
 
 @dataclass
@@ -42,6 +45,9 @@ class RefDocument:
     token_ids: List[int]
     content_token_ids: List[int]
     content_token_indices: List[int]
+    title: str = ''
+    author: str = ''
+    chunk_id: int = -1
 
 
 class SoftHypothesis(Hypothesis):
@@ -62,7 +68,10 @@ class SoftHypothesis(Hypothesis):
                           'end_index': s.end_index,
                           'span_text': s.span_text,
                           'ref_span_text': s.ref_span_text,
-                          'score': s.score} for s in self.spans]
+                          'score': s.score,
+                          'ref_title': s.ref_title,
+                          'ref_author': s.ref_author,
+                          'ref_chunk_id': s.ref_chunk_id} for s in self.spans]
         return {
             'matched_spans': matched_spans,
             'coverage': self.get_score(),
@@ -187,7 +196,7 @@ def find_matched_span(tgt_token_ids: List[int], threshold: float, min_content_wo
                         start_idx = ref_doc.content_token_indices[start]
                         end_idx = ref_doc.content_token_indices[end] if end < len(ref_doc.content_token_ids) else len(ref_doc.token_ids)
                         ref_span_text = tokenizer.decode(ref_doc.token_ids[start_idx: end_idx])
-                        matched_spans[ref_span_text] = final_score
+                        matched_spans[ref_span_text] = (final_score, ref_doc.title, ref_doc.author, ref_doc.chunk_id)
     except Exception as e:
         print(f'    [warning] find_matched_span error: {e}', flush=True)
         return {}
@@ -221,12 +230,15 @@ def find_soft_match(doc: Document, reference_docs: List[RefDocument], min_ngram:
             matched_spans.update(find_matched_span(span_token_ids, threshold, min_content_word, sim_table, ref_doc))
 
         if matched_spans:
-            for ref_span_text, ref_score in matched_spans.items():
+            for ref_span_text, (ref_score, ref_title, ref_author, ref_chunk_id) in matched_spans.items():
                 matched_span = SoftSpan(start_index=first_pointer,
                                         end_index=second_pointer,
                                         span_text=span_text,
                                         ref_span_text=ref_span_text,
-                                        score=ref_score)
+                                        score=ref_score,
+                                        ref_title=ref_title,
+                                        ref_author=ref_author,
+                                        ref_chunk_id=ref_chunk_id)
                 hypothesis.add_span(matched_span)
             second_pointer += 1
 
@@ -268,7 +280,9 @@ def _process_one_chunk(args):
     reference_docs = []
     for doc in retrieved_docs:
         content_token_ids, content_token_indices, token_ids = convert_phrase_to_tokens(unidecode(doc['doc_text']), return_index=True)
-        reference_docs.append(RefDocument(token_ids, content_token_ids, content_token_indices))
+        reference_docs.append(RefDocument(token_ids, content_token_ids, content_token_indices,
+                                          title=doc.get('title', ''), author=doc.get('author', ''),
+                                          chunk_id=doc.get('chunk_id', -1)))
 
     print(f'  Chunk {t_idx}: {len(tgt_doc.tokens)} tokens, {len(reference_docs)} ref docs — starting', flush=True)
 
