@@ -115,7 +115,16 @@ def main():
 
     args = parser.parse_args()
 
-    if args.index == "WIMD":
+    if args.index == "LOCAL":
+        es = Elasticsearch(
+            "http://localhost:9200",
+            retry_on_timeout=True,
+            timeout=180,
+            max_retries=10,
+        )
+        indices = ("copyrighted_books",)
+
+    elif args.index == "WIMD":
         es = Elasticsearch(
             cloud_id="lm-datasets:dXMtY2VudHJhbDEuZ2NwLmNsb3VkLmVzLmlvJDk1N2U5ODIwZDUxNTQ0YWViMjk0MmQwNzI1NjE0OTQ2JDhkN2M0OWMyZDEzMTRiNmM4NDNhNGEwN2U4NDE5NjRl",
             api_key=API_KEY,

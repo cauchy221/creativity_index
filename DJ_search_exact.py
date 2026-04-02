@@ -1,8 +1,8 @@
 import os
+import sys
 import nltk
 import json
 import time
-import requests
 import argparse
 import numpy as np
 from tqdm import tqdm
@@ -12,11 +12,16 @@ from unidecode import unidecode
 from sacremoses import MosesDetokenizer
 from transformers import AutoTokenizer
 
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'infini-gram', 'pkg'))
+from infini_gram.engine import InfiniGramEngine
+
 md = MosesDetokenizer(lang='en')
-API_URL = 'https://api.infini-gram.io/'
-HF_TOKEN = "YOUR_HF_TOKEN"
+HF_TOKEN = os.environ.get("HF_TOKEN", "YOUR_HF_TOKEN")
 tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf", token=HF_TOKEN,
                                           add_bos_token=False, add_eos_token=False)
+
+# Initialized in main() via --index_dir
+engine = None
 
 
 @dataclass
@@ -96,15 +101,11 @@ def find_exact_match(detokenize: Callable, doc: Document, min_ngram: int):
     first_pointer, second_pointer = 0, min_ngram
     while second_pointer <= len(doc.tokens):
         span_text = detokenize(doc.tokens[first_pointer: second_pointer])
-        request_data = {
-            'corpus': 'v4_rpj_llama_s4',
-            'engine': 'c++',
-            'query_type': 'count',
-            'query': span_text,
-        }
-        time.sleep(0.1)
-        search_result = requests.post(API_URL, json=request_data).json()
-        occurrence = 0 if 'count' not in search_result else search_result['count']
+        input_ids = tokenizer.encode(span_text)
+        if len(input_ids) > 0 and input_ids[0] == 29871:
+            input_ids = input_ids[1:]
+        search_result = engine.count(input_ids=input_ids)
+        occurrence = search_result.get('count', 0)
 
         if occurrence:
             matched_span = Span(start_index=first_pointer,
@@ -175,6 +176,8 @@ def dj_search(data_path, output_file, min_ngram, subset=100, lm_tokenizer=False)
 
 
 def main():
+    global engine
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--task', type=str, default='GPT3_book',
                         help="which type of corpus to analyze")
@@ -188,8 +191,18 @@ def main():
                         help="size of example subset to run search on")
     parser.add_argument('--lm_tokenizer', action='store_true',
                         help='whether to LM tokenizer instead of whitespace tokenizer')
+    parser.add_argument('--index_dir', type=str, required=True,
+                        help='path to infini-gram index directory')
 
     args = parser.parse_args()
+
+    engine = InfiniGramEngine(
+        s3_names=[],
+        index_dir=args.index_dir,
+        eos_token_id=tokenizer.eos_token_id,
+    )
+    print(f'Loaded infini-gram index from {args.index_dir}')
+
     os.makedirs(args.output_dir, exist_ok=True)
     args.output_file = os.path.join(args.output_dir, args.task + '.json')
     dj_search(args.data, args.output_file, args.min_ngram, args.subset, args.lm_tokenizer)

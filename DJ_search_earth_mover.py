@@ -18,7 +18,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from DJ_search_exact import Document, Hypothesis
 
-HF_TOKEN = "YOUR_HF_TOKEN"
+HF_TOKEN = os.environ.get("HF_TOKEN", "YOUR_HF_TOKEN")
 md = MosesDetokenizer(lang='en')
 tokenizer = AutoTokenizer.from_pretrained("meta-llama/Meta-Llama-3-8B", token=HF_TOKEN)
 
