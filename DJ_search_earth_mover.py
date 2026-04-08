@@ -1,6 +1,9 @@
 import os
 import json
-import torch
+try:
+    import torch
+except ImportError:
+    torch = None  # Only needed for get_lookup_table(), not for prebuilt .npy tables
 import pickle
 import gc
 import nltk

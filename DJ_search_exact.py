@@ -231,15 +231,25 @@ def main():
                         help='whether to LM tokenizer instead of whitespace tokenizer')
     parser.add_argument('--index_dir', type=str, nargs='+', required=True,
                         help='path(s) to infini-gram index directory(ies). Multiple dirs for incremental indexing.')
+    parser.add_argument('--load_to_ram', action='store_true',
+                        help='load entire index into RAM (~276GB for 306k books)')
 
     args = parser.parse_args()
 
+    import glob as globmod
+    total_size = sum(os.path.getsize(f) for d in args.index_dir for f in globmod.glob(os.path.join(d, '*')))
+    print(f'Loading infini-gram index (load_to_ram={args.load_to_ram}, {total_size/1e9:.0f}GB)...')
+    if args.load_to_ram:
+        print(f'  This may take 10-15 minutes for large indices. Please wait.', flush=True)
+    load_start = time.time()
     engine = InfiniGramEngine(
         s3_names=[],
         index_dir=args.index_dir,
         eos_token_id=tokenizer.eos_token_id,
+        load_to_ram=args.load_to_ram,
     )
-    print(f'Loaded infini-gram index from {args.index_dir} ({len(args.index_dir)} dir(s))')
+    load_time = time.time() - load_start
+    print(f'Index loaded from {args.index_dir} in {load_time/60:.1f} min ({len(args.index_dir)} dir(s))')
 
     os.makedirs(args.output_dir, exist_ok=True)
     args.output_file = os.path.join(args.output_dir, args.task + '.json')
