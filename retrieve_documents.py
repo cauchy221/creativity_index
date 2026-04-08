@@ -57,7 +57,7 @@ def _merge(ranked_results1, ranked_results2, topk: int = 0):
     return merged_results
 
 
-def search_index(es, query, nb_documents, indices=None):
+def search_index(es, query, nb_documents, indices=None, exclude_source_file=None):
     # segment can be an 1-gram, 2-gram, I can play with that. Does it do exact match the API??
     # return documents for each query n-gram
     # maybe one sentence is constructed based on multiple documents.
@@ -72,20 +72,29 @@ def search_index(es, query, nb_documents, indices=None):
     if c4_present:
         indices = [c for c in indices if c != "c4"]
 
+    # Build query with optional self-match exclusion
+    must_clause = {"match": {"text": query}}
+    must_not_clause = []
+    if exclude_source_file:
+        must_not_clause.append({"term": {"source_file": exclude_source_file}})
+
+    query_body = {"query": {"bool": {"must": must_clause, "must_not": must_not_clause}}}
+
     if indices:
         results = es.search(
             index=indices,
             size=nb_documents,
-            body={"query": {"bool": {"must": {"match": {"text": query}}}}},
+            body=query_body,
         )["hits"]["hits"]
     else:
         results = []
 
     if c4_present:
+        c4_query = {"query": {"bool": {"must": must_clause, "must_not": must_not_clause, "filter": {"term": {"subset": "en"}}}}}
         c4_results = es.search(
             index="c4",
             size=nb_documents,
-            body={"query": {"bool": {"must": {"match": {"text": query}}, "filter": {"term": {"subset": "en"}}}}},
+            body=c4_query,
         )["hits"]["hits"]
 
         return _merge(results, c4_results, nb_documents)
@@ -157,13 +166,18 @@ def main():
     with open(args.input_file, "r") as f:
         data = json.load(f)[:args.subset]
 
+    # Get source_file from target data for self-match exclusion
+    exclude_source_file = data[0].get('source_file', '') if data else ''
+    if exclude_source_file:
+        print(f'Excluding self-matches from: {exclude_source_file}')
+
     total_runtime = 0
     num_sents = 0
     nbgens = len(data)
     output_path = out / f"{name}_nbgens_{nbgens}_nbdoc{args.nb_documents}_{args.index}.json"
     for i, cur_data in enumerate(tqdm(data, desc="iterating through data")):
         generation = cur_data["text"]
-        
+
         # Clean the text
         generation = clean_text(generation)
         sentences = sent_tokenize(generation)
@@ -172,7 +186,8 @@ def main():
         for segment in tqdm(sentences, desc="reading sentences", leave=False):
             begin = time.perf_counter()
             try:
-                output = search_index(es, segment, args.nb_documents, indices)
+                output = search_index(es, segment, args.nb_documents, indices,
+                                      exclude_source_file=exclude_source_file)
             except:
                 print('Elastic Search API failed')
                 continue

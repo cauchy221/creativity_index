@@ -94,7 +94,7 @@ class Hypothesis:
         }
 
 
-def find_exact_match(detokenize: Callable, doc: Document, min_ngram: int):
+def find_exact_match(detokenize: Callable, doc: Document, min_ngram: int, exclude_source_file: str = None):
     hypothesis = Hypothesis(doc, min_ngram)
 
     first_pointer, second_pointer = 0, min_ngram
@@ -110,20 +110,32 @@ def find_exact_match(detokenize: Callable, doc: Document, min_ngram: int):
             # Get attribution: which reference book(s) contain this span
             sources = []
             try:
-                doc_result = engine.search_docs(input_ids=input_ids, maxnum=3, max_disp_len=1)
+                doc_result = engine.search_docs(input_ids=input_ids, maxnum=10, max_disp_len=1)
+                total_cnt = doc_result.get('cnt', occurrence)
+                self_match_count = 0
                 for ref_doc in doc_result.get('documents', []):
                     meta = json.loads(ref_doc.get('metadata', '{}')).get('metadata', {})
-                    sources.append({
+                    source = {
                         'title': meta.get('title', ''),
                         'author': meta.get('author', ''),
                         'source_file': meta.get('source_file', ''),
-                    })
+                    }
+                    if exclude_source_file and source['source_file'] == exclude_source_file:
+                        self_match_count += 1
+                    else:
+                        sources.append(source)
                 # Deduplicate by title
                 seen = set()
                 sources = [s for s in sources if s['title'] not in seen and not seen.add(s['title'])]
+                # If total count > self matches, other books definitely match
+                # If we only got self-matches in the sample but total is higher, keep it
+                if exclude_source_file:
+                    if not sources and total_cnt <= self_match_count:
+                        occurrence = 0
             except Exception:
                 pass
 
+        if occurrence:
             matched_span = Span(start_index=first_pointer,
                                 end_index=second_pointer,
                                 span_text=span_text,
@@ -158,7 +170,7 @@ def find_exact_match(detokenize: Callable, doc: Document, min_ngram: int):
 
 
 def dj_search(data_path, output_file, min_ngram, subset=100, lm_tokenizer=False):
-    data = json.load(open(data_path))[:subset]
+    all_data = json.load(open(data_path))[:subset]
     if not lm_tokenizer:
         tokenize_func = lambda x: nltk.tokenize.casual.casual_tokenize(x)
         detokenize = lambda x: md.detokenize(x)
@@ -166,10 +178,16 @@ def dj_search(data_path, output_file, min_ngram, subset=100, lm_tokenizer=False)
         tokenize_func = lambda x: tokenizer.tokenize(x)
         detokenize = lambda x: tokenizer.decode(tokenizer.convert_tokens_to_ids(x))
 
+    # Get source_file from target data for self-match exclusion (before resume slicing)
+    exclude_source_file = all_data[0].get('source_file', '') if all_data else ''
+    if exclude_source_file:
+        print(f'Excluding self-matches from: {exclude_source_file}')
+
     outputs = []
+    data = all_data
     if os.path.isfile(output_file):
         outputs = json.load(open(output_file, 'r'))
-        data = data[len(outputs):]
+        data = all_data[len(outputs):]
         print(f'resume from previous output file with {len(outputs)} items')
 
     for t_idx, t_doc in tqdm(enumerate(data), desc='target docs', total=len(data)):
@@ -178,7 +196,7 @@ def dj_search(data_path, output_file, min_ngram, subset=100, lm_tokenizer=False)
         if len(tgt_doc.tokens) <= min_ngram:
             continue
 
-        output = find_exact_match(detokenize, tgt_doc, min_ngram)
+        output = find_exact_match(detokenize, tgt_doc, min_ngram, exclude_source_file=exclude_source_file)
         t_doc.update(output)
         outputs.append(t_doc)
 
